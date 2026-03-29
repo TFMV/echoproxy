@@ -19,20 +19,6 @@ It is designed as a minimal, single-binary control surface for observing and val
 
 ---
 
-## Build
-
-```bash
-go build -o echoproxy
-```
-
-Or run directly:
-
-```bash
-go run main.go
-```
-
----
-
 ## Commands
 
 ### 1. record
