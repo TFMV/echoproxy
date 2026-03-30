@@ -35,7 +35,6 @@ func TestRecordingBasic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create logger: %v", err)
 	}
-	defer logger.Close()
 
 	p := proxy.New("127.0.0.1:0", upstream.URL,
 		proxy.WithLogger(logger),
@@ -44,10 +43,11 @@ func TestRecordingBasic(t *testing.T) {
 
 	go p.Serve()
 	defer p.Shutdown(context.Background())
+
 	time.Sleep(100 * time.Millisecond)
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://" + p.Listen + "/test?foo=bar")
+	resp, err := client.Get("http://" + p.ListenAddr() + "/test?foo=bar")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -67,7 +67,10 @@ func TestRecordingBasic(t *testing.T) {
 		t.Errorf("expected header X-Custom: value, got %s", resp.Header.Get("X-Custom"))
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
+
+	logger.Sync()
+	logger.Close()
 
 	recorded, err := replay.LoadLogFile(logFile)
 	if err != nil {
@@ -75,7 +78,8 @@ func TestRecordingBasic(t *testing.T) {
 	}
 
 	if len(recorded) != 1 {
-		t.Errorf("expected 1 recorded request, got %d", len(recorded))
+		data, _ := os.ReadFile(logFile)
+		t.Fatalf("expected 1 recorded request, got %d. file content: %s", len(recorded), string(data))
 	}
 
 	req := recorded[0]
@@ -120,7 +124,7 @@ func TestRecordingLargeBody(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post("http://"+p.Listen+"/upload", "application/octet-stream", bytes.NewReader(largeBody))
+	resp, err := client.Post("http://"+p.ListenAddr()+"/upload", "application/octet-stream", bytes.NewReader(largeBody))
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -166,7 +170,7 @@ func TestRecordingBinaryBody(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post("http://"+p.Listen+"/binary", "application/octet-stream", bytes.NewReader(binaryBody))
+	resp, err := client.Post("http://"+p.ListenAddr()+"/binary", "application/octet-stream", bytes.NewReader(binaryBody))
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -208,7 +212,7 @@ func TestReplay(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://" + p.Listen + "/test")
+	resp, err := client.Get("http://" + p.ListenAddr() + "/test")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -248,21 +252,22 @@ func TestReplayConcurrent(t *testing.T) {
 	logger, _ := log.NewJSONLLogger(logFile)
 	defer logger.Close()
 
-	p := proxy.New(":0", upstream.URL,
+	p := proxy.New("127.0.0.1:0", upstream.URL,
 		proxy.WithLogger(logger),
 		proxy.WithRecord(true),
 	)
 
 	go p.Serve()
+	defer p.Shutdown(context.Background())
 	time.Sleep(100 * time.Millisecond)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	for i := 0; i < 5; i++ {
-		resp, _ := client.Get("http://" + p.Listen + "/test")
+		resp, _ := client.Get("http://" + p.ListenAddr() + "/test")
 		resp.Body.Close()
 	}
 
-	p.Shutdown(context.Background())
+	time.Sleep(100 * time.Millisecond)
 
 	engine, _ := replay.New(logFile, replay.WithTarget(upstream.URL), replay.WithConcurrency(3))
 	results, err := engine.Run(context.Background())
@@ -426,18 +431,19 @@ func TestShadowNonBlocking(t *testing.T) {
 	logger, _ := log.NewJSONLLogger(logFile)
 	defer logger.Close()
 
-	p := proxy.New(":0", primary.URL,
+	p := proxy.New("127.0.0.1:0", primary.URL,
 		proxy.WithLogger(logger),
 		proxy.WithShadowMode(shadow.URL, 10*time.Second),
 	)
 
 	go p.Serve()
+	defer p.Shutdown(context.Background())
 	time.Sleep(100 * time.Millisecond)
 
 	start := time.Now()
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://" + p.Listen + "/test")
+	resp, err := client.Get("http://" + p.ListenAddr() + "/test")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -453,8 +459,6 @@ func TestShadowNonBlocking(t *testing.T) {
 	if elapsed > 200*time.Millisecond {
 		t.Errorf("primary response blocked by shadow, took %v", elapsed)
 	}
-
-	p.Shutdown(context.Background())
 }
 
 func TestShadowDivergence(t *testing.T) {
@@ -474,21 +478,20 @@ func TestShadowDivergence(t *testing.T) {
 	logger, _ := log.NewJSONLLogger(logFile)
 	defer logger.Close()
 
-	p := proxy.New(":0", primary.URL,
+	p := proxy.New("127.0.0.1:0", primary.URL,
 		proxy.WithLogger(logger),
 		proxy.WithShadowMode(shadow.URL, 10*time.Second),
 	)
 
 	go p.Serve()
+	defer p.Shutdown(context.Background())
 	time.Sleep(100 * time.Millisecond)
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, _ := client.Get("http://" + p.Listen + "/test")
+	resp, _ := client.Get("http://" + p.ListenAddr() + "/test")
 	resp.Body.Close()
 
-	time.Sleep(100 * time.Millisecond)
-
-	p.Shutdown(context.Background())
+	time.Sleep(200 * time.Millisecond)
 }
 
 func TestDiffBinary(t *testing.T) {
@@ -539,21 +542,22 @@ func TestReplayWithRateLimit(t *testing.T) {
 	logger, _ := log.NewJSONLLogger(logFile)
 	defer logger.Close()
 
-	p := proxy.New(":0", upstream.URL,
+	p := proxy.New("127.0.0.1:0", upstream.URL,
 		proxy.WithLogger(logger),
 		proxy.WithRecord(true),
 	)
 
 	go p.Serve()
+	defer p.Shutdown(context.Background())
 	time.Sleep(100 * time.Millisecond)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	for i := 0; i < 3; i++ {
-		resp, _ := client.Get("http://" + p.Listen + "/test")
+		resp, _ := client.Get("http://" + p.ListenAddr() + "/test")
 		resp.Body.Close()
 	}
 
-	p.Shutdown(context.Background())
+	time.Sleep(100 * time.Millisecond)
 
 	engine, _ := replay.New(logFile, replay.WithTarget(upstream.URL), replay.WithRateLimit(2))
 	start := time.Now()
@@ -580,19 +584,20 @@ func TestRecordingTiming(t *testing.T) {
 	logger, _ := log.NewJSONLLogger(logFile)
 	defer logger.Close()
 
-	p := proxy.New(":0", upstream.URL,
+	p := proxy.New("127.0.0.1:0", upstream.URL,
 		proxy.WithLogger(logger),
 		proxy.WithRecord(true),
 	)
 
 	go p.Serve()
+	defer p.Shutdown(context.Background())
 	time.Sleep(100 * time.Millisecond)
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, _ := client.Get("http://" + p.Listen + "/test")
+	resp, _ := client.Get("http://" + p.ListenAddr() + "/test")
 	resp.Body.Close()
 
-	p.Shutdown(context.Background())
+	time.Sleep(100 * time.Millisecond)
 
 	recorded, _ := replay.LoadLogFile(logFile)
 	if len(recorded) != 1 {
@@ -646,12 +651,13 @@ func TestRaceConditions(t *testing.T) {
 	logger, _ := log.NewJSONLLogger(logFile)
 	defer logger.Close()
 
-	p := proxy.New(":0", upstream.URL,
+	p := proxy.New("127.0.0.1:0", upstream.URL,
 		proxy.WithLogger(logger),
 		proxy.WithRecord(true),
 	)
 
 	go p.Serve()
+	defer p.Shutdown(context.Background())
 	time.Sleep(100 * time.Millisecond)
 
 	var wg sync.WaitGroup
@@ -661,7 +667,7 @@ func TestRaceConditions(t *testing.T) {
 			defer wg.Done()
 			client := &http.Client{Timeout: 5 * time.Second}
 			for j := 0; j < 10; j++ {
-				resp, _ := client.Get("http://" + p.Listen + "/test")
+				resp, _ := client.Get("http://" + p.ListenAddr() + "/test")
 				if resp != nil {
 					resp.Body.Close()
 				}
@@ -670,7 +676,6 @@ func TestRaceConditions(t *testing.T) {
 	}
 
 	wg.Wait()
-	p.Shutdown(context.Background())
 }
 
 func TestProxyStats(t *testing.T) {
@@ -683,21 +688,24 @@ func TestProxyStats(t *testing.T) {
 	logger, _ := log.NewJSONLLogger(logFile)
 	defer logger.Close()
 
-	p := proxy.New(":0", upstream.URL,
+	p := proxy.New("127.0.0.1:0", upstream.URL,
 		proxy.WithLogger(logger),
 		proxy.WithRecord(true),
 	)
 
 	go p.Serve()
+	defer p.Shutdown(context.Background())
 	time.Sleep(100 * time.Millisecond)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	for i := 0; i < 5; i++ {
-		resp, _ := client.Get("http://" + p.Listen + "/test")
+		resp, _ := client.Get("http://" + p.ListenAddr() + "/test")
 		if resp != nil {
 			resp.Body.Close()
 		}
 	}
+
+	time.Sleep(100 * time.Millisecond)
 
 	stats := p.Stats()
 	if stats.Requests != 5 {
@@ -707,8 +715,6 @@ func TestProxyStats(t *testing.T) {
 	if stats.Responses != 5 {
 		t.Errorf("expected 5 responses, got %d", stats.Responses)
 	}
-
-	p.Shutdown(context.Background())
 }
 
 func TestRecordingJSONLFormat(t *testing.T) {
@@ -725,19 +731,20 @@ func TestRecordingJSONLFormat(t *testing.T) {
 	}
 	defer logger.Close()
 
-	p := proxy.New(":0", upstream.URL,
+	p := proxy.New("127.0.0.1:0", upstream.URL,
 		proxy.WithLogger(logger),
 		proxy.WithRecord(true),
 	)
 
 	go p.Serve()
+	defer p.Shutdown(context.Background())
 	time.Sleep(100 * time.Millisecond)
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, _ := client.Get("http://" + p.Listen + "/test")
+	resp, _ := client.Get("http://" + p.ListenAddr() + "/test")
 	resp.Body.Close()
 
-	p.Shutdown(context.Background())
+	time.Sleep(100 * time.Millisecond)
 
 	data, err := os.ReadFile(logFile)
 	if err != nil {

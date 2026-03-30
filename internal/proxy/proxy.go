@@ -17,9 +17,12 @@ import (
 	"github.com/TFMV/echoproxy/internal/log"
 )
 
+var _ = net.Listen
+
 type Proxy struct {
-	Listen   string
-	Upstream string
+	listen   string
+	upstream string
+	listenMu sync.RWMutex
 
 	server       *http.Server
 	logger       *log.JSONLLogger
@@ -34,6 +37,18 @@ type Proxy struct {
 
 	statsMu sync.RWMutex
 	stats   Stats
+}
+
+func (p *Proxy) ListenAddr() string {
+	p.listenMu.RLock()
+	defer p.listenMu.RUnlock()
+	return p.listen
+}
+
+func (p *Proxy) SetListen(addr string) {
+	p.listenMu.Lock()
+	defer p.listenMu.Unlock()
+	p.listen = addr
 }
 
 type Stats struct {
@@ -74,8 +89,8 @@ func WithShadowMode(shadowURL string, ttl time.Duration) Option {
 
 func New(listen, upstream string, opts ...Option) *Proxy {
 	p := &Proxy{
-		Listen:   listen,
-		Upstream: upstream,
+		listen:   listen,
+		upstream: upstream,
 	}
 
 	p.transport = &http.Transport{
@@ -98,7 +113,7 @@ func New(listen, upstream string, opts ...Option) *Proxy {
 	}
 
 	p.server = &http.Server{
-		Addr:         p.Listen,
+		Addr:         p.listen,
 		Handler:      p,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
@@ -109,7 +124,12 @@ func New(listen, upstream string, opts ...Option) *Proxy {
 }
 
 func (p *Proxy) Serve() error {
-	return p.server.ListenAndServe()
+	ln, err := net.Listen("tcp", p.listen)
+	if err != nil {
+		return err
+	}
+	p.SetListen(ln.Addr().String())
+	return p.server.Serve(ln)
 }
 
 func (p *Proxy) ServeTLS(certFile, keyFile string) error {
@@ -150,7 +170,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.stats.BytesIn += int64(len(reqBody))
 	p.statsMu.Unlock()
 
-	upstreamURL := p.Upstream + r.RequestURI
+	upstreamURL := p.upstream + r.RequestURI
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, strings.NewReader(string(reqBody)))
 	if err != nil {

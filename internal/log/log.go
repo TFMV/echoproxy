@@ -155,8 +155,9 @@ func (l *Logger) Shutdown() error {
 
 type JSONLLogger struct {
 	*Logger
-	file    *os.File
-	encoder *json.Encoder
+	file      *os.File
+	bufWriter *bufio.Writer
+	encoder   *json.Encoder
 }
 
 func NewJSONLLogger(path string, opts ...LoggerOption) (*JSONLLogger, error) {
@@ -170,31 +171,21 @@ func NewJSONLLogger(path string, opts ...LoggerOption) (*JSONLLogger, error) {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
 
-	logger := New(bufio.NewWriter(f), opts...)
+	bw := bufio.NewWriter(f)
+	logger := New(bw, opts...)
 
 	return &JSONLLogger{
-		Logger:  logger,
-		file:    f,
-		encoder: json.NewEncoder(bufio.NewWriter(f)),
+		Logger:    logger,
+		file:      f,
+		bufWriter: bw,
+		encoder:   json.NewEncoder(bw),
 	}, nil
 }
 
 func (l *JSONLLogger) WriteRecordedRequest(rec httpx.RecordedRequest) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-
-	entry := Entry{
-		Timestamp: time.Now().UTC(),
-		Level:     LevelInfo,
-		Message:   "recorded_request",
-		Fields: Fields{
-			"request":  rec.Request,
-			"response": rec.Response,
-			"timing":   rec.Timing,
-			"error":    rec.Error,
-		},
-	}
-	return l.encoder.Encode(entry)
+	return l.encoder.Encode(rec)
 }
 
 func (l *JSONLLogger) WriteShadowResult(req httpx.Request, primary, shadow httpx.Response, divergence *Divergence) error {
@@ -221,8 +212,8 @@ func (l *JSONLLogger) WriteShadowResult(req httpx.Request, primary, shadow httpx
 }
 
 func (l *JSONLLogger) Sync() error {
-	if bw, ok := l.output.(*bufio.Writer); ok {
-		return bw.Flush()
+	if l.bufWriter != nil {
+		return l.bufWriter.Flush()
 	}
 	return nil
 }
